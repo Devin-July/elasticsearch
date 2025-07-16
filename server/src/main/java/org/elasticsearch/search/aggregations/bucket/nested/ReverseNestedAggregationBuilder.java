@@ -85,6 +85,12 @@ public class ReverseNestedAggregationBuilder extends AbstractAggregationBuilder<
             throw new IllegalArgumentException("Reverse nested aggregation [" + name + "] can only be used inside a [nested] aggregation");
         }
 
+        if (findReverseNestedAggregatorFactory(parent) != null) {
+            throw new IllegalArgumentException(
+                "Reverse nested aggregation [" + name + "] cannot be used inside another [reverse_nested] aggregation"
+            );
+        }
+
         NestedObjectMapper nestedMapper = null;
         if (path != null) {
             nestedMapper = context.nestedLookup().getNestedMappers().get(path);
@@ -109,6 +115,16 @@ public class ReverseNestedAggregationBuilder extends AbstractAggregationBuilder<
             return (NestedAggregatorFactory) parent;
         } else {
             return findNestedAggregatorFactory(parent.getParent());
+        }
+    }
+
+    private static ReverseNestedAggregatorFactory findReverseNestedAggregatorFactory(AggregatorFactory parent) {
+        if (parent == null) {
+            return null;
+        } else if (parent instanceof ReverseNestedAggregatorFactory) {
+            return (ReverseNestedAggregatorFactory) parent;
+        } else {
+            return findReverseNestedAggregatorFactory(parent.getParent());
         }
     }
 

@@ -243,6 +243,38 @@ public class ReverseNestedAggregatorTests extends AggregatorTestCase {
         }
     }
 
+    public void testInvalidReverseNestedChain() throws IOException {
+        try (Directory directory = newDirectory()) {
+            try (RandomIndexWriter iw = newRandomIndexWriterWithLogDocMergePolicy(directory)) {
+                // intentionally not writing any docs for this validation test
+            }
+            try (DirectoryReader indexReader = wrapInMockESDirectoryReader(DirectoryReader.open(directory))) {
+                NestedAggregationBuilder outerNestedBuilder = new NestedAggregationBuilder("outer_nested", "nested_object");
+                NestedAggregationBuilder innerNestedBuilder = new NestedAggregationBuilder("inner_nested", "nested_object.inner");
+                ReverseNestedAggregationBuilder firstReverseNestedBuilder = new ReverseNestedAggregationBuilder("first_reverse");
+                firstReverseNestedBuilder.path("nested_object");
+                ReverseNestedAggregationBuilder secondReverseNestedBuilder = new ReverseNestedAggregationBuilder("second_reverse");
+                secondReverseNestedBuilder.path("nested_object.inner");
+
+                outerNestedBuilder.subAggregation(innerNestedBuilder);
+                innerNestedBuilder.subAggregation(firstReverseNestedBuilder);
+                firstReverseNestedBuilder.subAggregation(secondReverseNestedBuilder);
+
+                MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(VALUE_FIELD_NAME, NumberFieldMapper.NumberType.LONG);
+
+                IllegalArgumentException exception = expectThrows(
+                    IllegalArgumentException.class,
+                    () -> searchAndReduce(indexReader, new AggTestConfig(outerNestedBuilder, fieldType))
+                );
+
+                assertEquals(
+                    "Reverse nested aggregation [second_reverse] cannot be used inside another [reverse_nested] aggregation",
+                    exception.getMessage()
+                );
+            }
+        }
+    }
+
     @Override
     protected List<ObjectMapper> objectMappers() {
         return NestedAggregatorTests.MOCK_OBJECT_MAPPERS;
