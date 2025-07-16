@@ -24,7 +24,7 @@ import java.util.Map;
 public class ReverseNestedAggregatorFactory extends AggregatorFactory {
 
     private final boolean unmapped;
-    private final NestedObjectMapper parentObjectMapper;
+    final NestedObjectMapper parentObjectMapper;
 
     public ReverseNestedAggregatorFactory(
         String name,

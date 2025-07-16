@@ -25,6 +25,8 @@ import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -81,8 +83,26 @@ public class ReverseNestedAggregationBuilder extends AbstractAggregationBuilder<
     @Override
     protected AggregatorFactory doBuild(AggregationContext context, AggregatorFactory parent, Builder subFactoriesBuilder)
         throws IOException {
-        if (findNestedAggregatorFactory(parent) == null) {
+        NestedAggregatorFactory nestedFactory = findNestedAggregatorFactory(parent);
+        if (nestedFactory == null) {
             throw new IllegalArgumentException("Reverse nested aggregation [" + name + "] can only be used inside a [nested] aggregation");
+        }
+
+        List<ReverseNestedAggregatorFactory> parentReverseNestedFactories = findParentReverseNestedFactories(parent);
+
+        String originalNestedPath = nestedFactory.childObjectMapper != null ? nestedFactory.childObjectMapper.fullPath() : null;
+        String effectiveNestedPath = determineEffectiveNestedPath(originalNestedPath, parentReverseNestedFactories);
+
+        if (path != null && isCompatiblePath(path, effectiveNestedPath) == false) {
+            throw new IllegalArgumentException(
+                "Reverse nested aggregation ["
+                    + name
+                    + "] with path ["
+                    + path
+                    + "] is invalid because the effective context is ["
+                    + effectiveNestedPath
+                    + "]. The path must reference a nested field that is a child of the current context."
+            );
         }
 
         NestedObjectMapper nestedMapper = null;
@@ -110,6 +130,60 @@ public class ReverseNestedAggregationBuilder extends AbstractAggregationBuilder<
         } else {
             return findNestedAggregatorFactory(parent.getParent());
         }
+    }
+
+    private static String getNestedPathFromFactory(NestedAggregatorFactory factory) {
+        if (factory.childObjectMapper != null) {
+            return factory.childObjectMapper.fullPath();
+        }
+        return getNestedPathFromBuilder(factory);
+    }
+
+    private static String getNestedPathFromBuilder(AggregatorFactory factory) {
+        return null;
+    }
+
+    private static List<ReverseNestedAggregatorFactory> findParentReverseNestedFactories(AggregatorFactory parent) {
+        List<ReverseNestedAggregatorFactory> factories = new ArrayList<>();
+        AggregatorFactory current = parent;
+        while (current != null) {
+            if (current instanceof ReverseNestedAggregatorFactory) {
+                factories.add((ReverseNestedAggregatorFactory) current);
+            }
+            current = current.getParent();
+        }
+        return factories;
+    }
+
+    private static String determineEffectiveNestedPath(
+        String originalNestedPath,
+        List<ReverseNestedAggregatorFactory> parentReverseNestedFactories
+    ) {
+        String effectivePath = originalNestedPath;
+
+        for (int i = parentReverseNestedFactories.size() - 1; i >= 0; i--) {
+            ReverseNestedAggregatorFactory factory = parentReverseNestedFactories.get(i);
+            if (factory.parentObjectMapper != null) {
+                effectivePath = factory.parentObjectMapper.fullPath();
+            } else {
+                effectivePath = null;
+                break;
+            }
+        }
+
+        return effectivePath;
+    }
+
+    private static boolean isCompatiblePath(String targetPath, String effectiveNestedPath) {
+        if (targetPath == null) {
+            return true;
+        }
+
+        if (effectiveNestedPath == null) {
+            return targetPath.contains(".") == false;
+        }
+
+        return effectiveNestedPath.startsWith(targetPath + ".") || effectiveNestedPath.equals(targetPath);
     }
 
     @Override

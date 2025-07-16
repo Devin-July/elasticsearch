@@ -24,7 +24,7 @@ import java.util.Map;
 public class NestedAggregatorFactory extends AggregatorFactory {
 
     private final NestedObjectMapper parentObjectMapper;
-    private final NestedObjectMapper childObjectMapper;
+    final NestedObjectMapper childObjectMapper;
 
     NestedAggregatorFactory(
         String name,

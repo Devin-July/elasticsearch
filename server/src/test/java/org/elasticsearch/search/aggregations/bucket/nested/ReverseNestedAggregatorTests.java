@@ -37,13 +37,17 @@ import org.elasticsearch.search.aggregations.metrics.MaxAggregationBuilder;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
+import java.util.stream.DoubleStream;
 import java.util.stream.LongStream;
 
 import static java.util.stream.Collectors.toList;
 import static org.elasticsearch.search.aggregations.AggregationBuilders.max;
 import static org.elasticsearch.search.aggregations.AggregationBuilders.nested;
 import static org.elasticsearch.search.aggregations.AggregationBuilders.reverseNested;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.junit.Assert.assertNotNull;
 
 public class ReverseNestedAggregatorTests extends AggregatorTestCase {
 
@@ -52,6 +56,10 @@ public class ReverseNestedAggregatorTests extends AggregatorTestCase {
     private static final String NESTED_AGG = "nestedAgg";
     private static final String REVERSE_AGG_NAME = "reverseNestedAgg";
     private static final String MAX_AGG_NAME = "maxAgg";
+
+    private static final SeqNoFieldMapper.SequenceIDFields sequenceIDFields = SeqNoFieldMapper.SequenceIDFields.emptySeqID(
+        SeqNoFieldMapper.SeqNoIndexOptions.POINTS_AND_DOC_VALUES
+    );
 
     /**
      * Nested aggregations need the {@linkplain DirectoryReader} wrapped.
@@ -241,6 +249,137 @@ public class ReverseNestedAggregatorTests extends AggregatorTestCase {
                 }
             }
         }
+    }
+
+    public void testInvalidReverseNestedPath() throws IOException {
+        try (Directory directory = newDirectory()) {
+            try (RandomIndexWriter iw = newRandomIndexWriterWithLogDocMergePolicy(directory)) {
+                List<Iterable<IndexableField>> documents = new ArrayList<>();
+
+                generateMaxDocs(documents, 2, 0, NESTED_OBJECT + ".nested_object2", VALUE_FIELD_NAME);
+
+                generateMaxDocs(documents, 2, 1, NESTED_OBJECT, VALUE_FIELD_NAME);
+
+                LuceneDocument document = new LuceneDocument();
+                document.add(new StringField(IdFieldMapper.NAME, Uid.encodeId("0"), Field.Store.YES));
+                document.add(new StringField(NestedPathFieldMapper.NAME, "test", Field.Store.NO));
+                sequenceIDFields.addFields(document);
+                documents.add(document);
+
+                iw.addDocuments(documents);
+                iw.commit();
+            }
+
+            try (DirectoryReader indexReader = wrapInMockESDirectoryReader(DirectoryReader.open(directory))) {
+                NestedAggregationBuilder nestedA = new NestedAggregationBuilder("nested_a", NESTED_OBJECT);
+                NestedAggregationBuilder nestedAB = new NestedAggregationBuilder("nested_ab", NESTED_OBJECT + ".nested_object2");
+                ReverseNestedAggregationBuilder reverseA = new ReverseNestedAggregationBuilder("reverse_a").path(NESTED_OBJECT);
+                ReverseNestedAggregationBuilder reverseAB = new ReverseNestedAggregationBuilder("reverse_ab").path(
+                    NESTED_OBJECT + ".nested_object2"
+                );
+
+                nestedA.subAggregation(nestedAB.subAggregation(reverseA.subAggregation(reverseAB)));
+
+                MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(VALUE_FIELD_NAME, NumberFieldMapper.NumberType.LONG);
+
+                IllegalArgumentException exception = expectThrows(IllegalArgumentException.class, () -> {
+                    searchAndReduce(indexReader, new AggTestConfig(nestedA, fieldType));
+                });
+
+                assertThat(
+                    exception.getMessage(),
+                    containsString("Reverse nested aggregation [reverse_ab] with path [" + NESTED_OBJECT + ".nested_object2] is invalid")
+                );
+                assertThat(exception.getMessage(), containsString("effective context is [null]"));
+            }
+        }
+    }
+
+    public void testValidReverseNestedPath() throws IOException {
+        try (Directory directory = newDirectory()) {
+            try (RandomIndexWriter iw = newRandomIndexWriterWithLogDocMergePolicy(directory)) {
+                List<Iterable<IndexableField>> documents = new ArrayList<>();
+                generateMaxDocs(documents, 1, 0, NESTED_OBJECT + ".nested_object2", VALUE_FIELD_NAME);
+
+                LuceneDocument document = new LuceneDocument();
+                document.add(new StringField(IdFieldMapper.NAME, Uid.encodeId("0"), Field.Store.YES));
+                document.add(new StringField(NestedPathFieldMapper.NAME, "test", Field.Store.NO));
+                sequenceIDFields.addFields(document);
+                documents.add(document);
+                iw.addDocuments(documents);
+                iw.commit();
+            }
+
+            try (DirectoryReader indexReader = wrapInMockESDirectoryReader(DirectoryReader.open(directory))) {
+                NestedAggregationBuilder nestedAB = new NestedAggregationBuilder("nested_ab", NESTED_OBJECT + ".nested_object2");
+                ReverseNestedAggregationBuilder reverseA = new ReverseNestedAggregationBuilder("reverse_a").path(NESTED_OBJECT);
+                ReverseNestedAggregationBuilder reverseRoot = new ReverseNestedAggregationBuilder("reverse_root");
+
+                nestedAB.subAggregation(reverseA.subAggregation(reverseRoot));
+
+                MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(VALUE_FIELD_NAME, NumberFieldMapper.NumberType.LONG);
+
+                SingleBucketAggregation result = searchAndReduce(indexReader, new AggTestConfig(nestedAB, fieldType));
+                assertNotNull(result);
+            }
+        }
+    }
+
+    public void testReverseNestedToRoot() throws IOException {
+        try (Directory directory = newDirectory()) {
+            try (RandomIndexWriter iw = newRandomIndexWriterWithLogDocMergePolicy(directory)) {
+                List<Iterable<IndexableField>> documents = new ArrayList<>();
+                generateMaxDocs(documents, 1, 0, NESTED_OBJECT, VALUE_FIELD_NAME);
+
+                LuceneDocument document = new LuceneDocument();
+                document.add(new StringField(IdFieldMapper.NAME, Uid.encodeId("0"), Field.Store.YES));
+                document.add(new StringField(NestedPathFieldMapper.NAME, "test", Field.Store.NO));
+                sequenceIDFields.addFields(document);
+                documents.add(document);
+                iw.addDocuments(documents);
+                iw.commit();
+            }
+
+            try (DirectoryReader indexReader = wrapInMockESDirectoryReader(DirectoryReader.open(directory))) {
+                NestedAggregationBuilder nestedA = new NestedAggregationBuilder("nested_a", NESTED_OBJECT);
+                ReverseNestedAggregationBuilder reverseRoot = new ReverseNestedAggregationBuilder("reverse_root");
+
+                nestedA.subAggregation(reverseRoot);
+
+                MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(VALUE_FIELD_NAME, NumberFieldMapper.NumberType.LONG);
+
+                SingleBucketAggregation result = searchAndReduce(indexReader, new AggTestConfig(nestedA, fieldType));
+                assertNotNull(result);
+            }
+        }
+    }
+
+    private double generateMaxDocs(List<Iterable<IndexableField>> documents, int numNestedDocs, int id, String path, String fieldName) {
+        return DoubleStream.of(generateDocuments(documents, numNestedDocs, id, path, fieldName, (doc, n) -> {}))
+            .max()
+            .orElse(Double.NEGATIVE_INFINITY);
+    }
+
+    private static double[] generateDocuments(
+        List<Iterable<IndexableField>> documents,
+        int numNestedDocs,
+        int id,
+        String path,
+        String fieldName,
+        BiConsumer<Document, Integer> extra
+    ) {
+        double[] values = new double[numNestedDocs];
+        for (int nested = 0; nested < numNestedDocs; nested++) {
+            Document document = new Document();
+            document.add(new StringField(IdFieldMapper.NAME, Uid.encodeId(Integer.toString(id)), Field.Store.NO));
+            document.add(new StringField(NestedPathFieldMapper.NAME, path, Field.Store.NO));
+            long value = randomNonNegativeLong() % 10000;
+            document.add(new SortedNumericDocValuesField(fieldName, value));
+            extra.accept(document, nested);
+            documents.add(document);
+            values[nested] = value;
+        }
+        return values;
     }
 
     @Override
